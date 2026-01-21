@@ -1,0 +1,102 @@
+name: Update README Badges
+
+# Trigger the workflow on push, pull request, or schedule
+on:
+  push:
+    branches:
+      - main
+      - master
+      - develop
+  pull_request:
+    branches:
+      - main
+      - master
+  schedule:
+    # Run daily at 00:00 UTC
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+    # Allow manual trigger
+
+jobs:
+  update-badges:
+    name: Generate and Update Badges
+    runs-on: ubuntu-latest
+    
+    permissions:
+      contents: write
+      pull-requests: write
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+      
+      - name: Install Dependencies
+        run: npm ci
+      
+      - name: Run Tests with Coverage
+        run: |
+          npm test -- --coverage --coverageReporters=json-summary || true
+        continue-on-error: true
+      
+      - name: Set Build Status
+        id: build-status
+        run: |
+          if [ ${{ job.status }} == 'success' ]; then
+            echo "BUILD_STATUS=passing" >> $GITHUB_ENV
+          else
+            echo "BUILD_STATUS=failing" >> $GITHUB_ENV
+          fi
+      
+      - name: Generate Badges
+        env:
+          GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+          BUILD_STATUS: ${{ env.BUILD_STATUS }}
+        run: node src/badge-generator.js
+      
+      - name: Check for Changes
+        id: check-changes
+        run: |
+          if git diff --quiet README.md; then
+            echo "changed=false" >> $GITHUB_OUTPUT
+          else
+            echo "changed=true" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Commit and Push Changes
+        if: steps.check-changes.outputs.changed == 'true' && github.event_name != 'pull_request'
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add README.md
+          git commit -m "🤖 Auto-update README badges [skip ci]"
+          git push
+      
+      - name: Create Pull Request Comment
+        if: steps.check-changes.outputs.changed == 'true' && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: '🤖 README badges have been updated automatically!'
+            })
+      
+      - name: Upload Badge Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: readme-with-badges
+          path: README.md
+          retention-days: 30
